@@ -126,6 +126,27 @@ While the core logic is production-ready, scaling to thousands of concurrent use
 
 ---
 
+
+## 8. Testing & Code Coverage
+Enterprise reliability is ensured through a comprehensive asynchronous test suite using `pytest` and `pytest-cov`. The suite is designed to validate security boundaries, data integrity, and API resilience without incurring LLM API costs.
+
+### Test Coverage Highlights
+* **Secure Sandbox Testing (Zero-Trust):** Validates network isolation, ensuring malicious code cannot access external endpoints or host file systems.
+* **Schema Extraction Validation:** Uses ephemeral SQLite databases to verify 100% accuracy in table and column metadata extraction.
+* **API Gateway Resilience:** Tests strict Pydantic payload validation and Tenant API Key authentication logic.
+* **FinOps LLM Mocking:** Uses `unittest.mock.patch` to intercept Cohere API calls during testing, ensuring CI/CD pipelines cost $0.00 to run.
+
+### Generating Coverage Reports
+To execute the tests and generate an interactive HTML code coverage report:
+```bash
+# Install testing dependencies
+pip install pytest pytest-asyncio pytest-cov pytest-html
+
+# Run tests and generate the HTML coverage report
+pytest --cov=core --cov-report=html
+```
+
+
 ## 7. How to Run Locally (Developer Setup)
 
 ### Prerequisites
@@ -184,6 +205,9 @@ The backend manages the LangGraph orchestration, RAG indexing, and Docker sandbo
 uvicorn core.api.production_gateway:app --reload --port 8000
 ```
 *The API will be available at: `http://127.0.0.1:8000/docs`*
+
+
+
 
 ### Step 5: Run the Frontend UI (Streamlit)
 The frontend serves as the interaction layer for the Manager to upload policies and query data.
