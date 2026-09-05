@@ -71,48 +71,52 @@ The system follows a strict **Microservices-oriented architecture** with a clear
 
 ## 5. Deep Dive: File-by-File Architectural Breakdown
 
-To understand the enterprise-grade nature of this system, here is a detailed breakdown of the codebase architecture, highlighting the specific best practices and technologies implemented in each microservice.
+To understand the enterprise-grade nature of this system, here is a detailed breakdown of the codebase architecture, highlighting the specific role of each technology and the best practices implemented.
 
 ### 1. `core/api/production_gateway.py` (The API & State Management Layer)
-*   **Technologies:** `FastAPI`, `uvicorn`, `langgraph.checkpoint.postgres`, `SQLAlchemy`.
-*   **Best Practices Implemented:**
-    *   **Asynchronous Gateway:** Built fully async to handle multiple concurrent Manager requests without blocking the main event loop.
-    *   **State Persistence (Checkpointers):** Utilized `AsyncPostgresSaver` to persist the LangGraph thread states into a PostgreSQL database. This is critical for **Fault Tolerance** and enables **Human-in-the-Loop (HITL)** capabilities (pausing execution for human approval and resuming without state loss).
-    *   **Dependency Injection:** Used FastAPI's `Depends(get_tenant_id)` to enforce strict multi-tenancy auth checks at the gateway level before any graph execution begins.
+* **Technologies & Architectural Roles:**
+  * **FastAPI & Uvicorn:** Chosen as the API Gateway for their native `asyncio` support. Since LLM generation and Docker execution are heavily I/O bound, async architecture ensures the main thread is never blocked.
+  * **langgraph.checkpoint.postgres:** Serves as the State Persistence layer. Chosen over in-memory storage to ensure that workflow states survive server restarts, enabling Fault Tolerance and Human-in-the-Loop (HITL) approval gates.
+* **Best Practices Implemented:**
+  * **Dependency Injection:** Enforces strict multi-tenancy auth checks via `Depends(get_tenant_id)` at the gateway level before any graph execution begins.
 
 ### 2. `core/agents/graph_orchestrator.py` (The AI Brain & Logic Layer)
-*   **Technologies:** `LangGraph`, `LangChain`, `Cohere Command-R+`, Python `re` (Regex).
-*   **Best Practices Implemented:**
-    *   **Deterministic Workflows:** Replaced unpredictable standard Agents with a compiled `StateGraph`. The graph explicitly defines conditional edges (`condition_check_success`) to route the flow between the LLM and the Sandbox.
-    *   **Self-Healing AI Loop:** If the Docker sandbox throws an error (e.g., `SyntaxError` or missing column), the graph loops back to the LLM (`coder_agent`), injecting the exact error traceback into the prompt for autonomous code correction (capped at 3 `MAX_RETRIES` to prevent infinite loops).
-    *   **Defensive Parsing (Regex):** Built a strict Regex parser to extract pure Python code from the LLM's response, completely neutralizing the "Chatty LLM" problem and preventing hallucinated conversational text from crashing the execution engine.
-    *   **LLMOps Observability:** Integrated `LangSmith` traces natively to monitor prompt performance, token usage, and graph execution depth.
+* **Technologies & Architectural Roles:**
+  * **LangGraph:** Acts as the Orchestrator. Chosen over standard LangChain Agents to replace unpredictable reasoning loops with deterministic, controllable state machines (Graphs).
+  * **Cohere Command-R+:** The Core LLM Engine. Chosen for its superior fine-tuning specifically tailored for RAG pipelines and complex code generation compared to generalized models.
+  * **Python `re` (Regex):** Acts as the Defensive Output Parser. Chosen because standard LangChain output parsers often fail when the LLM becomes conversational.
+* **Best Practices Implemented:**
+  * **Self-Healing AI Loop:** The graph explicitly defines conditional edges. If the Docker sandbox throws a `SyntaxError`, the graph loops back, injecting the traceback into the LLM prompt for autonomous auto-correction (capped at 3 retries).
+  * **LLMOps Observability:** Integrated `LangSmith` natively to monitor token usage and graph execution depth per tenant.
 
 ### 3. `core/sandbox/docker_executor.py` (The Secure Execution Layer)
-*   **Technologies:** `Docker SDK for Python`, `asyncio`.
-*   **Best Practices Implemented:**
-    *   **Air-Gapped Isolation:** The generated code runs inside an ephemeral `python:3.11-slim` container with **Network disabled** (`network_mode="none"`), preventing data exfiltration or malicious API calls.
-    *   **Read-Only Volume Mounts:** The enterprise CSV data is mounted using strictly `ro` (Read-Only) permissions (`/mnt_data/:ro`). The AI can analyze the data but is physically prevented from altering or corrupting the source file.
-    *   **Timeout & Resource Limits:** Implemented strict asynchronous timeouts to kill the container if the LLM writes an infinite `while` loop or highly inefficient Pandas operations, protecting host CPU/RAM resources.
+* **Technologies & Architectural Roles:**
+  * **Docker SDK for Python:** The Execution Engine. Chosen because running LLM-generated code via native `exec()` is a critical security vulnerability. The SDK allows us to programmatically spin up ephemeral, air-gapped containers.
+  * **Asyncio Subprocesses:** Prevents the system from hanging while waiting for container execution to finish.
+* **Best Practices Implemented:**
+  * **Air-Gapped Isolation:** Containers are spawned with **Network disabled** (`network_mode="none"`) to prevent data exfiltration.
+  * **Read-Only Volume Mounts:** The enterprise CSV data is mounted using strictly `ro` (Read-Only) permissions, physically preventing the AI from altering the source file.
 
 ### 4. `core/rag/enterprise_pdf_parser.py` (The Retrieval-Augmented Generation Layer)
-*   **Technologies:** `unstructured` (Layout-Aware), `Tesseract OCR`, `PGVector`, `sentence-transformers`.
-*   **Best Practices Implemented:**
-    *   **Layout-Aware Parsing vs. Naive Text:** Instead of blindly extracting text (which destroys tables and headers), we use computer vision (`hi_res` strategy via YOLOX) to understand the visual structure of the PDF. This ensures that legal rules in tables or bullet points are chunked contextually.
-    *   **Multi-Tenant Vector DB:** Embedded policies are saved in PostgreSQL (`pgvector`) alongside a `tenant_id` metadata tag. The retrieval strictly filters by tenant, ensuring zero data leakage between different enterprise clients.
-    *   **Semantic Search Grounding:** Prevents LLM hallucinations by injecting the *exact* retrieved legal bounds (e.g., "Max discount 15%") directly into the System Prompt before code generation.
+* **Technologies & Architectural Roles:**
+  * **`unstructured` & `YOLOX` (Computer Vision):** The Ingestion Engine. Standard PDF parsers (like PyPDF2) destroy tabular data. This vision-based strategy detects table boundaries and headers, keeping enterprise policies intact.
+  * **PGVector (PostgreSQL):** The Vector Database. Chosen to keep relational metadata (Tenant IDs) and vector embeddings in the exact same ACID-compliant database, simplifying infrastructure and guaranteeing data governance (avoiding external SaaS vector stores).
+* **Best Practices Implemented:**
+  * **Semantic Search Grounding:** Prevents hallucinations by injecting the *exact* retrieved legal constraints directly into the LLM's System Prompt prior to code generation.
 
 ### 5. `core/data/schema_extractor.py` (The Data Profiling Layer)
-*   **Technologies:** `SQLAlchemy Reflection`, `Pandas`.
-*   **Best Practices Implemented:**
-    *   **Zero-Data-Retention Exposure:** Automatically extracts column names and data types (e.g., `int64`, `O`) without sending any actual row data to the LLM. This provides the AI with perfect structural context while strictly adhering to Data Privacy compliance.
+* **Technologies & Architectural Roles:**
+  * **SQLAlchemy Reflection:** The Schema Profiler. Dynamically extracts table structures without hardcoding.
+* **Best Practices Implemented:**
+  * **Zero-Data-Retention Exposure:** Provides the LLM with perfect structural context (column names, data types) while strictly preventing any actual row data from being exposed to the prompt.
 
 ### 6. `frontend/app.py` (The Decoupled User Interface)
-*   **Technologies:** `Streamlit`, `requests`.
-*   **Best Practices Implemented:**
-    *   **Dumb UI (Microservices Pattern):** The frontend contains zero business logic or database connections. It strictly interacts with the Backend via RESTful HTTP `POST` APIs (`/upload-policy`, `/analyze`).
-    *   **Responsive State Management:** Uses Streamlit's `session_state` to handle mock authentication tokens and display execution progress fluidly to the end-user.
+* **Technologies & Architectural Roles:**
+  * **Streamlit:** The Rapid UI Layer. Chosen to build a functional, interactive prototype in pure Python without needing a separate frontend stack, keeping the focus on the AI backend.
+* **Best Practices Implemented:**
+  * **Dumb UI (Microservices Pattern):** The frontend contains zero business logic. It strictly interacts with the Backend via RESTful HTTP APIs, demonstrating a clean separation of concerns.
 
+  
 ## 6. Roadmap & Scalability (Future Improvements)
 While the core logic is production-ready, scaling to thousands of concurrent users would require:
 1.  **Kubernetes Jobs:** Transitioning from the local Docker Daemon to Kubernetes (K8s) Jobs for the sandbox environment to handle distributed, concurrent code execution across a cluster.
