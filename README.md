@@ -149,3 +149,51 @@ pip install -r requirements.txt
 
 # Install specific unstructured dependencies for PDF parsing
 pip install unstructured unstructured-inference unstructured[pdf]
+```
+
+### Step 2: Environment Variables
+Create a `.env` file in the root directory of the project and add your API keys and Database URI:
+
+```ini
+# .env file
+cohere_api_key="your_cohere_api_key_here"
+LANGCHAIN_API_KEY="your_langsmith_api_key_here"
+LANGCHAIN_TRACING_V2="true"
+LANGCHAIN_PROJECT="autonomous_bi_project"
+
+# PostgreSQL Connection String (Ensure pgvector is enabled in this DB)
+DB_URI_RAG="postgresql+psycopg://postgres:password@localhost:5433/autonomous_bi"
+```
+
+### Step 3: Database Preparation
+Ensure your PostgreSQL server is running and the database exists. The system uses SQLAlchemy to auto-generate the necessary tables (for LangGraph Checkpointers and Vector Embeddings) on the first run, but you must ensure the `pgvector` extension is active:
+```sql
+-- Run this in your PostgreSQL CLI tool (e.g., pgAdmin or psql)
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+### Step 4: Run the Backend Microservice (FastAPI)
+The backend manages the LangGraph orchestration, RAG indexing, and Docker sandbox execution.
+```bash
+# Open a new Terminal (ensure venv is activated)
+# Start the production API gateway
+uvicorn core.api.production_gateway:app --reload --port 8000
+```
+*The API will be available at: `http://127.0.0.1:8000/docs`*
+
+### Step 5: Run the Frontend UI (Streamlit)
+The frontend serves as the interaction layer for the Manager to upload policies and query data.
+```bash
+# Open a second Terminal (ensure venv is activated)
+# Run the Streamlit app from the root directory to ensure correct path resolution
+python -m streamlit run frontend/app.py
+```
+*The UI will be available at: `http://localhost:8501`*
+
+### Step 6: Testing the System
+1.  Open the Streamlit UI.
+2.  Upload the sample `uploaded_data.csv` (contains sales data).
+3.  Upload the `policy.pdf` (contains the "15% max discount" rule).
+4.  Wait for the green success message indicating the RAG engine has chunked and indexed the PDF.
+5.  Type the query: *"Which sales violated the discount policy?"*
+6.  Watch the backend terminal as the LangGraph agent generates code, safely executes it in Docker, and returns the strictly formatted result to the UI.
